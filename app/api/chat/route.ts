@@ -185,7 +185,7 @@ export async function POST(request: NextRequest) {
     const response = await openai.responses.create({
       model,
       store: false,
-      max_output_tokens: 500,
+      max_output_tokens: 800,
       instructions,
       input: messages.map((m) => ({ role: m.role, content: m.content })),
       ...(isGpt5Family ? { reasoning: { effort: getReasoningEffort() } } : {}),

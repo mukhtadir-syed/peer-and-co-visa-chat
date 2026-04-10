@@ -30,6 +30,8 @@ cp .env.example .env.local
 OPENAI_API_KEY=your_new_key_here
 OPENAI_MODEL=gpt-5-mini
 OPENAI_REASONING_EFFORT=low
+BASIC_AUTH_USERNAME=your_username
+BASIC_AUTH_PASSWORD=your_password
 ```
 
 4. Start dev server:
@@ -44,6 +46,7 @@ npm run dev
 
 - Never expose `OPENAI_API_KEY` in frontend/browser code.
 - If you shared a key in chat or a screenshot, revoke it and generate a new one.
+- App access is protected via HTTP Basic Auth using `BASIC_AUTH_USERNAME` and `BASIC_AUTH_PASSWORD`.
 
 ## Speed tuning
 
@@ -51,3 +54,7 @@ If responses still feel slow, try:
 
 - `OPENAI_MODEL=gpt-4.1-mini` for lower latency
 - Keep `OPENAI_REASONING_EFFORT=low`
+
+## Response length
+
+- API output is capped with `max_output_tokens: 800` in `app/api/chat/route.ts`.
