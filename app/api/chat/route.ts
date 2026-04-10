@@ -181,26 +181,62 @@ export async function POST(request: NextRequest) {
     const instructions = [DEVELOPER_INSTRUCTIONS, buildContextBlock(referenceContext)].join("\n\n");
     const model = getModelName();
     const isGpt5Family = model.startsWith("gpt-5");
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const writeEvent = (eventName: string, payload: Record<string, unknown>) => {
+          controller.enqueue(
+            encoder.encode(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`),
+          );
+        };
 
-    const response = await openai.responses.create({
-      model,
-      store: false,
-      max_output_tokens: 800,
-      instructions,
-      input: messages.map((m) => ({ role: m.role, content: m.content })),
-      ...(isGpt5Family ? { reasoning: { effort: getReasoningEffort() } } : {}),
+        let accumulatedText = "";
+
+        try {
+          const responseStream = await openai.responses.create({
+            model,
+            store: false,
+            stream: true,
+            max_output_tokens: 800,
+            instructions,
+            input: messages.map((m) => ({ role: m.role, content: m.content })),
+            ...(isGpt5Family ? { reasoning: { effort: getReasoningEffort() } } : {}),
+          });
+
+          for await (const event of responseStream) {
+            if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
+              accumulatedText += event.delta;
+              writeEvent("delta", { text: event.delta });
+            }
+          }
+
+          const text = sanitizeAssistantReply(accumulatedText.trim());
+          if (!text) {
+            writeEvent("error", { message: "No response text generated. Please try again." });
+            return;
+          }
+
+          const nudges = buildDynamicNudges(messages, text);
+          writeEvent("final", { text, nudges });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Unexpected error while generating response.";
+          writeEvent("error", {
+            message: message.includes("OPENAI_API_KEY") ? message : "Chat request failed.",
+          });
+        } finally {
+          controller.close();
+        }
+      },
     });
 
-    const text = sanitizeAssistantReply(response.output_text?.trim() ?? "");
-    if (!text) {
-      return NextResponse.json(
-        { error: "No response text generated. Please try again." },
-        { status: 502 },
-      );
-    }
-
-    const nudges = buildDynamicNudges(messages, text);
-    return NextResponse.json({ reply: text, nudges });
+    return new NextResponse(stream, {
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      },
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unexpected error while generating response.";

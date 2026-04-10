@@ -36,7 +36,7 @@ export function ChatWindow() {
   async function submitMessage(text: string) {
     const userMessage: Message = { role: "user", content: text.trim() };
     const nextMessages = [...messages, userMessage];
-    setMessages(nextMessages);
+    setMessages([...nextMessages, { role: "assistant", content: "" }]);
     setInput("");
     setError(null);
     setIsLoading(true);
@@ -48,22 +48,75 @@ export function ChatWindow() {
         body: JSON.stringify({ messages: nextMessages }),
       });
 
-      const data = (await res.json()) as {
-        reply?: string;
-        nudges?: string[];
-        error?: string;
-      };
-      if (!res.ok || !data.reply) {
+      if (!res.ok || !res.body) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(data.error || "Could not generate a response.");
       }
 
-      setMessages((prev) => [...prev, { role: "assistant", content: data.reply! }]);
-      if (Array.isArray(data.nudges) && data.nudges.length > 0) {
-        setNudges(data.nudges.slice(0, 4));
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let rawBuffer = "";
+      let assistantText = "";
+
+      const updateAssistantText = (content: string) => {
+        setMessages((prev) => {
+          const updated = [...prev];
+          const lastIndex = updated.length - 1;
+          if (lastIndex >= 0 && updated[lastIndex].role === "assistant") {
+            updated[lastIndex] = { role: "assistant", content };
+          }
+          return updated;
+        });
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        rawBuffer += decoder.decode(value, { stream: true });
+        const events = rawBuffer.split("\n\n");
+        rawBuffer = events.pop() ?? "";
+
+        for (const eventBlock of events) {
+          const lines = eventBlock.split("\n");
+          const eventName = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
+          const dataLine = lines.find((line) => line.startsWith("data:"))?.slice(5).trim();
+          if (!eventName || !dataLine) continue;
+
+          const payload = JSON.parse(dataLine) as {
+            text?: string;
+            message?: string;
+            nudges?: string[];
+          };
+
+          if (eventName === "delta" && payload.text) {
+            assistantText += payload.text;
+            updateAssistantText(assistantText);
+          }
+
+          if (eventName === "final" && payload.text) {
+            assistantText = payload.text;
+            updateAssistantText(assistantText);
+            if (Array.isArray(payload.nudges) && payload.nudges.length > 0) {
+              setNudges(payload.nudges.slice(0, 4));
+            }
+          }
+
+          if (eventName === "error") {
+            throw new Error(payload.message || "Could not generate a response.");
+          }
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unexpected error.";
       setError(message);
+      setMessages((prev) => {
+        const updated = [...prev];
+        if (updated[updated.length - 1]?.role === "assistant" && !updated[updated.length - 1].content) {
+          updated.pop();
+        }
+        return updated;
+      });
     } finally {
       setIsLoading(false);
     }
